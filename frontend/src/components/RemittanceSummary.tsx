@@ -14,82 +14,77 @@ function formatCurrency(amount: number): string {
 }
 
 export default function RemittanceSummary({ summary }: RemittanceSummaryProps) {
-  const paidPercent = summary.total_charged > 0
-    ? ((summary.total_paid / summary.total_charged) * 100).toFixed(1)
-    : '0';
+  const paidPercent = summary.total_charged > 0 ? ((summary.total_paid / summary.total_charged) * 100).toFixed(1) : '0';
 
   return (
-    <div className="glass-card p-4 animate-fade-in">
-      <h3 className="text-lg font-bold text-slate-100 mb-4 flex items-center gap-2">
-        💰 835 Remittance Summary
-      </h3>
+    <section className="glass-card panel-card animate-fade-in">
+      <div className="panel-header">
+        <div>
+          <h3 className="panel-title">835 remittance summary</h3>
+          <p className="panel-subtitle">Payment, adjustment, and denial totals extracted from the uploaded remit.</p>
+        </div>
+        <span className="badge badge-success">{paidPercent}% paid</span>
+      </div>
 
-      {/* Summary Cards */}
-      <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 mb-6">
-        <div className="bg-dark-blue/20 border border-dark-blue/30 rounded-xl p-4">
-          <div className="text-xs text-slate-400 mb-1">Total Charged</div>
-          <div className="text-xl font-bold text-slate-100">{formatCurrency(summary.total_charged)}</div>
+      <div className="stat-grid mb-5">
+        <div className="summary-stat surface-panel">
+          <span>Total charged</span>
+          <strong>{formatCurrency(summary.total_charged)}</strong>
         </div>
-        <div className="bg-green/20 border border-green/30 rounded-xl p-4">
-          <div className="text-xs text-slate-400 mb-1">Total Paid</div>
-          <div className="text-xl font-bold text-green">{formatCurrency(summary.total_paid)}</div>
-          <div className="text-xs text-slate-500 mt-1">{paidPercent}% of charged</div>
+        <div className="summary-stat surface-panel">
+          <span>Total paid</span>
+          <strong className="text-green">{formatCurrency(summary.total_paid)}</strong>
         </div>
-        <div className="bg-orange/20 border border-orange/30 rounded-xl p-4">
-          <div className="text-xs text-slate-400 mb-1">Total Adjusted</div>
-          <div className="text-xl font-bold text-orange">{formatCurrency(summary.total_adjusted)}</div>
+        <div className="summary-stat surface-panel">
+          <span>Total adjusted</span>
+          <strong className="text-amber">{formatCurrency(summary.total_adjusted)}</strong>
         </div>
-        <div className="bg-red-accent/20 border border-red-accent/30 rounded-xl p-4">
-          <div className="text-xs text-slate-400 mb-1">Total Denied</div>
-          <div className="text-xl font-bold text-red-accent">{formatCurrency(summary.total_denied)}</div>
+        <div className="summary-stat surface-panel">
+          <span>Total denied</span>
+          <strong className="text-red">{formatCurrency(summary.total_denied)}</strong>
         </div>
       </div>
 
-      {/* Claims Table */}
-      <h4 className="text-sm font-semibold text-slate-300 mb-3">Claim Details</h4>
-      <div className="overflow-x-auto">
-        <table className="w-full text-sm">
+      <div className="table-wrap surface-panel">
+        <table className="data-table text-sm">
           <thead>
-            <tr className="border-b border-slate-700">
-              <th className="text-left py-2 px-3 text-slate-400 font-medium">Claim ID</th>
-              <th className="text-left py-2 px-3 text-slate-400 font-medium">Status</th>
-              <th className="text-right py-2 px-3 text-slate-400 font-medium">Charged</th>
-              <th className="text-right py-2 px-3 text-slate-400 font-medium">Paid</th>
-              <th className="text-left py-2 px-3 text-slate-400 font-medium">Adjustments</th>
+            <tr>
+              <th className="text-left">Claim ID</th>
+              <th className="text-left">Status</th>
+              <th className="text-right">Charged</th>
+              <th className="text-right">Paid</th>
+              <th className="text-left">Adjustments</th>
             </tr>
           </thead>
           <tbody>
-            {summary.claims.map((claim, i) => (
-              <tr key={i} className="border-b border-slate-800 hover:bg-white/5 transition-colors">
-                <td className="py-2.5 px-3 font-mono text-accent-blue">{claim.claim_id}</td>
-                <td className="py-2.5 px-3">
-                  <span className={`badge ${
-                    claim.status === '4' ? 'badge-error' :
-                    claim.status === '1' ? 'badge-success' : 'badge-info'
-                  }`}>
+            {summary.claims.map((claim, index) => (
+              <tr key={index} className="table-row">
+                <td className="font-mono text-accent">{claim.claim_id}</td>
+                <td>
+                  <span className={`badge ${claim.status === '4' ? 'badge-error' : claim.status === '1' ? 'badge-success' : 'badge-info'}`}>
                     {claim.status_label}
                   </span>
                 </td>
-                <td className="py-2.5 px-3 text-right font-mono text-slate-300">
-                  {formatCurrency(claim.charged)}
-                </td>
-                <td className="py-2.5 px-3 text-right font-mono text-green">
-                  {formatCurrency(claim.paid)}
-                </td>
-                <td className="py-2.5 px-3">
-                  {claim.adjustments?.map((adj: any, j: number) => (
-                    <div key={j} className="text-xs text-slate-400 mb-1">
-                      <span className="font-mono text-orange">{adj.group_code}-{adj.reason_code}</span>
-                      <span className="ml-1">{adj.reason_description}</span>
-                      <span className="ml-1 text-red-accent">({formatCurrency(adj.amount)})</span>
-                    </div>
-                  ))}
+                <td className="text-right font-mono text-slate-200">{formatCurrency(claim.charged)}</td>
+                <td className="text-right font-mono text-green">{formatCurrency(claim.paid)}</td>
+                <td>
+                  {claim.adjustments?.length ? (
+                    claim.adjustments.map((adj: any, adjustmentIndex: number) => (
+                      <div key={adjustmentIndex} className="mb-1 text-xs text-slate-400 last:mb-0">
+                        <span className="font-mono text-amber">{adj.group_code}-{adj.reason_code}</span>
+                        <span className="ml-2">{adj.reason_description}</span>
+                        <span className="ml-2 text-red">({formatCurrency(adj.amount)})</span>
+                      </div>
+                    ))
+                  ) : (
+                    <span className="text-slate-500">No adjustments</span>
+                  )}
                 </td>
               </tr>
             ))}
           </tbody>
         </table>
       </div>
-    </div>
+    </section>
   );
 }

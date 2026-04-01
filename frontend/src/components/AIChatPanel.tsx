@@ -1,198 +1,611 @@
 import { useState, useRef, useEffect } from 'react';
+import type { ChangeEvent } from 'react';
+import MagicBento from './MagicBento';
+import type { BentoCardProps } from './MagicBento';
 
 interface ChatMessage {
   role: 'user' | 'assistant';
   content: string;
 }
 
-interface AIChatPanelProps {
-  context?: string;
+interface ChatSession {
+  id: string;
+  title: string;
+  messages: ChatMessage[];
+  updatedAt: number;
+  isBookmarked?: boolean;
+  attachedContext?: string;
+  attachedFileName?: string;
+  filterTag?: string;
 }
 
-export default function AIChatPanel({ context }: AIChatPanelProps) {
+interface AIChatPanelProps {
+  context?: string;
+  onBack?: () => void;
+}
+
+type FolderType = 'All Chats' | 'Bookmarked' | 'With Attachments';
+
+const renderMessageContent = (content: string) => {
+  const blocks = content.split(/(```[\s\S]*?```)/g);
+  return blocks.map((block, i) => {
+    if (block.startsWith('```') && block.endsWith('```')) {
+      const codeLines = block.split('\n');
+      codeLines.shift(); // remove ```lang
+      codeLines.pop(); // remove ```
+      const codeText = codeLines.join('\n');
+      return (
+        <div key={i} className="my-5 bg-[#14321c] rounded-2xl p-5 border border-[#1b4a2a] shadow-lg relative group">
+          <button 
+            className="absolute top-4 right-4 text-[#4ade80] opacity-0 group-hover:opacity-100 transition hover:text-white bg-[#112415] p-1.5 rounded-md border border-[#1b4a2a]"
+            onClick={() => navigator.clipboard.writeText(codeText)}
+            title="Copy Code"
+          >
+             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2"/><rect x="8" y="2" width="8" height="4" rx="1" ry="1"/></svg>
+          </button>
+          <pre className="font-mono text-[13px] text-[#4ade80] overflow-x-auto whitespace-pre-wrap leading-relaxed">{codeText}</pre>
+        </div>
+      );
+    }
+    return (
+      <span 
+         key={i} 
+         className="whitespace-pre-wrap leading-[1.8]"
+         dangerouslySetInnerHTML={{
+           __html: block.replace(/\*\*(.*?)\*\*/g, '<strong class="text-white font-semibold">$1</strong>').replace(/\n/g, '<br />'),
+         }}
+      />
+    );
+  });
+};
+
+export default function AIChatPanel({ context: globalContext, onBack }: AIChatPanelProps) {
+  const [sessions, setSessions] = useState<ChatSession[]>([]);
+  const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
+
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [input, setInput] = useState('');
+  const [searchQuery, setSearchQuery] = useState('');
   const [loading, setLoading] = useState(false);
+
+  const [activeFolder, setActiveFolder] = useState<FolderType>('All Chats');
+  const [activeFilterTag, setActiveFilterTag] = useState('All');
+  
+  const [localAttachment, setLocalAttachment] = useState<{name: string, content: string} | null>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+
   const messagesEndRef = useRef<HTMLDivElement>(null);
-  const textareaRef = useRef<HTMLTextAreaElement>(null);
+
+  useEffect(() => {
+    const stored = localStorage.getItem('claimguard_chat_sessions');
+    if (stored) {
+      try {
+        const parsed = JSON.parse(stored);
+        setSessions(parsed);
+      } catch (e) {
+        console.error("Failed to parse chat sessions", e);
+      }
+    }
+  }, []);
+
+  useEffect(() => {
+    if (sessions.length > 0) {
+      localStorage.setItem('claimguard_chat_sessions', JSON.stringify(sessions));
+    } else {
+      localStorage.removeItem('claimguard_chat_sessions');
+    }
+  }, [sessions]);
+
+  useEffect(() => {
+    if (activeSessionId) {
+      const sess = sessions.find(s => s.id === activeSessionId);
+      if (sess) {
+        setMessages(sess.messages);
+        setLocalAttachment(sess.attachedFileName ? { name: sess.attachedFileName, content: sess.attachedContext! } : null);
+        setActiveFilterTag(sess.filterTag || 'All');
+      }
+    } else {
+      setMessages([]);
+      setLocalAttachment(null);
+      setActiveFilterTag('All');
+    }
+  }, [activeSessionId]);
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [messages]);
+  }, [messages, loading]);
 
-  useEffect(() => {
-    if (textareaRef.current) {
-      textareaRef.current.style.height = 'auto';
-      textareaRef.current.style.height = `${Math.min(textareaRef.current.scrollHeight, 120)}px`;
+  const activeSession = sessions.find(s => s.id === activeSessionId);
+
+  const createNewChat = () => {
+    setActiveSessionId(null);
+    setMessages([]);
+    setInput('');
+    setLocalAttachment(null);
+    setActiveFilterTag('All');
+  };
+
+  const selectChat = (id: string) => {
+    setActiveSessionId(id);
+    const sess = sessions.find(s => s.id === id);
+    if (sess) {
+       setMessages(sess.messages);
     }
-  }, [input]);
+  };
+
+  const deleteChat = (e: React.MouseEvent, id: string) => {
+    e.stopPropagation();
+    setSessions(prev => prev.filter(s => s.id !== id));
+    if (activeSessionId === id) {
+      createNewChat();
+    }
+  };
+
+  const toggleBookmark = () => {
+    if (!activeSessionId) return;
+    setSessions(prev => prev.map(s => s.id === activeSessionId ? { ...s, isBookmarked: !s.isBookmarked } : s));
+  };
+
+  const exportChat = () => {
+    if (!activeSession) return;
+    const blob = new Blob([JSON.stringify(activeSession, null, 2)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `chat_${activeSession.title.replace(/\s+/g, '_')}.json`;
+    a.click();
+    URL.revokeObjectURL(url);
+  };
+
+  const handleFileUpload = (e: ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    const reader = new FileReader();
+    reader.onload = (event) => {
+      const content = event.target?.result as string;
+      setLocalAttachment({ name: file.name, content });
+      
+      if (activeSessionId) {
+        setSessions(prev => prev.map(s => s.id === activeSessionId ? { ...s, attachedFileName: file.name, attachedContext: content } : s));
+      }
+    };
+    reader.readAsText(file);
+    
+    if (fileInputRef.current) fileInputRef.current.value = '';
+  };
+
+  const removeAttachment = () => {
+    setLocalAttachment(null);
+    if (activeSessionId) {
+      setSessions(prev => prev.map(s => s.id === activeSessionId ? { ...s, attachedFileName: undefined, attachedContext: undefined } : s));
+    }
+  };
 
   const sendMessage = async (overrideInput?: string) => {
     const textToSend = overrideInput || input;
     if (!textToSend.trim() || loading) return;
 
-    const userMsg: ChatMessage = { role: 'user', content: textToSend.trim() };
-    setMessages((prev) => [...prev, userMsg]);
+    const prefix = activeFilterTag !== 'All' ? `[Filtering Context: ${activeFilterTag}]\n` : '';
+    const fullText = prefix + textToSend.trim();
+
+    const userMsg: ChatMessage = { role: 'user', content: fullText };
+    const updatedMessages = [...messages, userMsg];
+    
+    setMessages(updatedMessages);
     setInput('');
     setLoading(true);
+
+    let currentId = activeSessionId;
+    let isNewSession = false;
+
+    if (!currentId) {
+      currentId = Date.now().toString();
+      isNewSession = true;
+      setActiveSessionId(currentId);
+    }
+
+    const effectiveContext = localAttachment ? localAttachment.content : globalContext;
+
+    setSessions(prev => {
+      let nextState;
+      if (isNewSession) {
+        let title = textToSend.trim();
+        if (title.length > 25) title = title.substring(0, 25) + "...";
+        nextState = [{ 
+          id: currentId as string, 
+          title, 
+          messages: updatedMessages, 
+          updatedAt: Date.now(),
+          attachedFileName: localAttachment?.name,
+          attachedContext: localAttachment?.content,
+          filterTag: activeFilterTag,
+          isBookmarked: false
+        }, ...prev];
+      } else {
+        nextState = prev.map(s => s.id === currentId ? { ...s, messages: updatedMessages, updatedAt: Date.now() } : s);
+      }
+      return nextState.sort((a, b) => b.updatedAt - a.updatedAt);
+    });
 
     try {
       const res = await fetch('/api/chat', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          message: userMsg.content,
-          context: context || null,
+          message: fullText,
+          context: effectiveContext || null,
           history: messages.slice(-6),
         }),
       });
 
       const data = await res.json();
-      const reply = data.reply || data.error || 'No response received.';
-      setMessages((prev) => [...prev, { role: 'assistant', content: reply }]);
+      const replyContent = data.reply || data.error || 'No response received.';
+      const astMsg: ChatMessage = { role: 'assistant', content: replyContent };
+      const finaleMessages = [...updatedMessages, astMsg];
+      
+      setMessages(finaleMessages);
+
+      setSessions(prev => {
+        return prev.map(s => s.id === currentId ? { ...s, messages: finaleMessages, updatedAt: Date.now() } : s).sort((a, b) => b.updatedAt - a.updatedAt);
+      });
+
     } catch (err: any) {
-      setMessages((prev) => [
-        ...prev,
-        { role: 'assistant', content: `⚠️ Error: ${err.message}` },
-      ]);
+      const errMsg: ChatMessage = { role: 'assistant', content: `Error: ${err.message}` };
+      const finaleMessages = [...updatedMessages, errMsg];
+      
+      setMessages(finaleMessages);
+      setSessions(prev => {
+        return prev.map(s => s.id === currentId ? { ...s, messages: finaleMessages, updatedAt: Date.now() } : s);
+      });
     } finally {
       setLoading(false);
     }
   };
 
-  const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
-    if (e.key === 'Enter' && !e.shiftKey) {
+  const handleKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
+    if (e.key === 'Enter') {
       e.preventDefault();
       sendMessage();
     }
   };
 
-  const quickQuestions = [
-    { title: 'Explain', desc: 'the ISA segment', icon: '💡' },
-    { title: 'Troubleshoot', desc: 'NPI validation', icon: '🛠️' },
-    { title: 'Decode', desc: 'CARC code 45', icon: '🔍' },
-    { title: 'Summarize', desc: 'claim denials', icon: '📝' },
+  let filteredSessions = sessions.filter(s => s.title.toLowerCase().includes(searchQuery.toLowerCase()));
+  if (activeFolder === 'Bookmarked') {
+    filteredSessions = filteredSessions.filter(s => s.isBookmarked);
+  } else if (activeFolder === 'With Attachments') {
+    filteredSessions = filteredSessions.filter(s => !!s.attachedContext);
+  }
+
+  const filterTabs = ['All', '837P Claims', '835 Remit', '834 Enroll', 'Context', 'History'];
+
+  const chatCards: BentoCardProps[] = [
+    {
+       title: "Segment Analysis",
+       description: "Understand complex X12 structural loops and elements.",
+       onClick: () => sendMessage("Explain the ST, GS, and ISA segments format")
+    },
+    {
+       title: "Denial Mitigation",
+       description: "Analyze remittance advice against standard CARC/RARC codes.",
+       onClick: () => sendMessage("Decode CARC code 45 and explain it")
+    },
+    {
+       title: "Remediation Guide",
+       description: "Get step-by-step suggestions to fix incorrect EDI payloads.",
+       onClick: () => sendMessage("How do I fix a missing NM109 segment?")
+    }
   ];
 
   return (
-    <div className="flex flex-col h-[480px] w-full max-w-4xl mx-auto bg-[#131314] rounded-2xl shadow-[0_10px_40px_rgba(0,0,0,0.6)] border border-white/5 overflow-hidden font-sans">
-      <div className="w-full p-4 flex items-center justify-between shrink-0 border-b border-white/5 bg-[#131314] z-10">
-        <div className="flex items-center gap-2 text-lg font-medium text-[#e3e3e3]">
-          <span className="text-xl">✨</span>
-          ClaimGuard AI
-        </div>
-        <div className="px-3 py-1 bg-[#1e1f20] rounded-lg text-[11px] font-semibold text-slate-300 border border-white/10 shadow-inner tracking-wide uppercase">
-          Gemini 1.5 Pro
-        </div>
-      </div>
+    <div className="flex h-[100dvh] w-full bg-[#050907] text-slate-200 font-sans fixed inset-0 z-50">
+      
+      <input 
+        type="file" 
+        accept=".txt,.edi,.csv,.json"
+        ref={fileInputRef} 
+        className="hidden" 
+        onChange={handleFileUpload}
+      />
 
-      <div className="flex-1 overflow-y-auto px-4 md:px-8 py-4 scroll-smooth flex flex-col">
-        {messages.length === 0 && (
-          <div className="flex-1 flex flex-col justify-center max-w-3xl mx-auto w-full animate-fade-in my-auto pb-4">
-            <h1 className="text-3xl md:text-4xl font-medium mb-1 tracking-tight text-left">
-              <span className="bg-gradient-to-r from-[#4285f4] via-[#d96570] to-[#ce63c1] bg-clip-text text-transparent">
-                Hello,
-              </span>
-            </h1>
-            <h2 className="text-2xl md:text-3xl font-medium text-[#444746] mb-6 tracking-tight text-left">
-              How can I help you today?
-            </h2>
+      {/* Sidebar */}
+      <div className="w-[300px] flex-shrink-0 bg-[#161616] border-r border-[#222] py-6 flex flex-col m-3 rounded-[24px] z-20 overflow-hidden">
+        <div className="flex items-center gap-3 px-6 mb-6 cursor-pointer hover:opacity-80 transition" onClick={onBack}>
+          <div className="w-8 h-8 rounded-full bg-[#3d3d3d] flex items-center justify-center">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M15 18l-6-6 6-6" /></svg>
+          </div>
+          <span className="font-semibold text-[15px] text-white tracking-tight">ClaimGuard Chats</span>
+        </div>
 
-            <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-              {quickQuestions.map((q, idx) => (
-                <button
-                  key={idx}
-                  onClick={() => sendMessage(`${q.title} ${q.desc}`)}
-                  className="bg-[#1e1f20] hover:bg-[#2a2b2f] transition-colors p-3 rounded-xl flex flex-col gap-2 text-left h-full min-h-[90px] group border border-transparent hover:border-white/5 cursor-pointer shadow-sm"
+        <div className="relative mb-6 px-4">
+          <input
+            type="text"
+            placeholder="Search"
+            value={searchQuery}
+            onChange={(e) => setSearchQuery(e.target.value)}
+            className="w-full bg-[#2a2a2a] text-sm text-slate-300 rounded-xl py-2 pl-10 pr-4 outline-none focus:ring-1 focus:ring-[#4ade80]"
+          />
+          <svg className="absolute left-7 top-2.5 text-slate-400 w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><circle cx="11" cy="11" r="8"/><path d="M21 21l-4.35-4.35"/></svg>
+        </div>
+
+        <div className="flex-1 overflow-y-auto space-y-6 scrollbar-hide px-2">
+          {/* Functional Folders Section */}
+          <div>
+            <div className="text-[11px] font-bold text-slate-500 mb-2 mt-2 flex justify-between items-center px-4">
+              Folders
+            </div>
+            <div className="space-y-[1px]">
+              {(['All Chats', 'Bookmarked', 'With Attachments'] as FolderType[]).map(folder => (
+                <div 
+                  key={folder} 
+                  onClick={() => setActiveFolder(folder)}
+                  className={`group flex items-center justify-between px-4 py-2.5 rounded-r-lg cursor-pointer text-[14px] transition border-l-[3px] ${activeFolder === folder ? 'bg-[#1a2e22] border-[#4ade80] text-[#4ade80] font-medium' : 'border-transparent hover:bg-[#202020] text-slate-300'}`}
                 >
-                  <div className="text-[13px] text-[#e3e3e3] font-medium leading-relaxed">
-                    <span className="text-white font-semibold">{q.title}</span> <br/> {q.desc}
+                  <div className="flex items-center gap-3">
+                    <svg className={`w-[18px] h-[18px] ${activeFolder === folder ? 'text-[#4ade80]' : 'text-slate-500 group-hover:text-slate-400'}`} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                      {folder === 'Bookmarked' ? <path d="M19 21l-7-5-7 5V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2z"/> : folder === 'With Attachments' ? <path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"/> : <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/>}
+                    </svg>
+                    <span className="truncate max-w-[150px]">{folder}</span>
                   </div>
-                  <div className="mt-auto self-end bg-[#131314] p-1.5 rounded-full opacity-100 group-hover:bg-[#333538] transition-colors text-xs">
-                    {q.icon}
-                  </div>
-                </button>
+                  <span className="text-slate-600 group-hover:text-slate-400 tracking-widest text-[10px] hidden group-hover:block">...</span>
+                </div>
               ))}
             </div>
           </div>
-        )}
 
-        <div className="max-w-3xl mx-auto w-full space-y-6">
-          {messages.map((msg, i) => (
-            <div key={i} className={`flex w-full animate-fade-in ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}>
-              {msg.role === 'user' ? (
-                <div className="bg-[#1e1f20] text-[#e3e3e3] px-5 py-2.5 rounded-3xl max-w-[85%] text-[14px] leading-relaxed shadow-sm">
-                  {msg.content}
-                </div>
-              ) : (
-                <div className="flex gap-3 max-w-full">
-                  <div className="w-8 h-8 rounded-full shrink-0 flex items-center justify-center mt-1">
-                    <svg width="22" height="22" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
-                      <path d="M16.19 2H7.81C4.17 2 2 4.17 2 7.81V16.18C2 19.83 4.17 22 7.81 22H16.18C19.82 22 21.99 19.83 21.99 16.19V7.81C22 4.17 19.83 2 16.19 2ZM15.96 11.21L13.12 12.55C12.78 12.71 12.51 12.98 12.34 13.33L10.99 16.16C10.74 16.69 9.99 16.69 9.74 16.16L8.4 13.33C8.23 12.99 7.96 12.72 7.61 12.55L4.78 11.21C4.25 10.96 4.25 10.21 4.78 9.96L7.61 8.62C7.95 8.46 8.22 8.19 8.39 7.84L9.74 5.01C9.99 4.48 10.74 4.48 10.99 5.01L12.33 7.84C12.5 8.18 12.77 8.45 13.12 8.62L15.96 9.96C16.49 10.21 16.49 10.96 15.96 11.21ZM18.9 17.61L17.7 18.17C17.55 18.24 17.44 18.35 17.37 18.5L16.81 19.7C16.7 19.92 16.38 19.92 16.27 19.7L15.71 18.5C15.64 18.35 15.53 18.24 15.38 18.17L14.18 17.61C13.96 17.5 13.96 17.18 14.18 17.07L15.38 16.51C15.53 16.44 15.64 16.33 15.71 16.18L16.27 14.98C16.38 14.76 16.7 14.76 16.81 14.98L17.37 16.18C17.44 16.33 17.55 16.44 17.7 16.51L18.9 17.07C19.12 17.18 19.12 17.5 18.9 17.61ZM18.9 6.84L17.7 7.4C17.55 7.47 17.44 7.58 17.37 7.73L16.81 8.93C16.7 9.15 16.38 9.15 16.27 8.93L15.71 7.73C15.64 7.58 15.53 7.47 15.38 7.4L14.18 6.84C13.96 6.73 13.96 6.41 14.18 6.3L15.38 5.74C15.53 5.67 15.64 5.56 15.71 5.41L16.27 4.21C16.38 3.99 16.7 3.99 16.81 4.21L17.37 5.41C17.44 5.56 17.55 5.67 17.7 5.74L18.9 6.3C19.12 6.41 19.12 6.73 18.9 6.84Z" fill="url(#paint0_linear)"/>
-                      <defs>
-                        <linearGradient id="paint0_linear" x1="2" y1="12" x2="22" y2="12" gradientUnits="userSpaceOnUse">
-                          <stop stopColor="#4285f4"/>
-                          <stop offset="0.5" stopColor="#d96570"/>
-                          <stop offset="1" stopColor="#ce63c1"/>
-                        </linearGradient>
-                      </defs>
-                    </svg>
+          {/* Dynamic Chats Section */}
+          <div>
+            <div className="text-[11px] font-bold text-slate-500 mb-2 mt-2 flex justify-between items-center px-4">
+              {searchQuery ? 'Search Results' : activeFolder}
+            </div>
+            
+            {filteredSessions.length === 0 ? (
+              <div className="px-4 py-2 text-xs text-slate-500 italic">No chats found.</div>
+            ) : (
+              <div className="space-y-[1px]">
+                {filteredSessions.map((chat) => (
+                  <div 
+                    key={chat.id} 
+                    onClick={() => selectChat(chat.id)}
+                    className={`group flex flex-col px-4 py-2.5 rounded-r-lg cursor-pointer relative transition-colors border-l-[3px] ${activeSessionId === chat.id ? 'bg-[#1a2e22] border-[#4ade80]' : 'border-transparent hover:bg-[#202020]'}`}
+                  >
+                    <div className="flex items-center gap-3 text-[14px] text-slate-300">
+                      <svg className={`w-[18px] h-[18px] shrink-0 ${activeSessionId === chat.id ? 'text-[#4ade80]' : 'text-slate-500'}`} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
+                      <span className={`truncate w-[140px] ${activeSessionId === chat.id ? 'font-medium text-[#4ade80]' : ''}`}>{chat.title}</span>
+                      {chat.isBookmarked && (
+                        <svg className="w-3.5 h-3.5 text-[#4ade80] ml-auto shrink-0" viewBox="0 0 24 24" fill="currentColor"><path d="M19 21l-7-5-7 5V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2z"/></svg>
+                      )}
+                    </div>
+                    
+                    {(chat.filterTag && chat.filterTag !== 'All') && (
+                      <div className="text-[10px] text-[#4ade80]/70 truncate mt-1 pl-[30px] opacity-80 group-hover:opacity-100">Tag: {chat.filterTag}</div>
+                    )}
+
+                    <button 
+                      onClick={(e) => deleteChat(e, chat.id)}
+                      className="absolute right-4 top-2.5 text-slate-600 hover:text-red-400 p-1 opacity-0 group-hover:opacity-100 transition"
+                      title="Delete chat"
+                    >
+                      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M18 6L6 18M6 6l12 12"/></svg>
+                    </button>
                   </div>
-                  <div className="flex-1 text-[#e3e3e3] text-[14px] leading-relaxed pt-1">
-                    <div
-                      className="whitespace-pre-wrap font-sans"
-                      dangerouslySetInnerHTML={{
-                        __html: msg.content
-                          .replace(/\*\*(.*?)\*\*/g, '<strong class="text-white font-semibold">$1</strong>')
-                          .replace(/\n/g, '<br />')
-                      }}
-                    />
+                ))}
+              </div>
+            )}
+          </div>
+        </div>
+
+        <button 
+          onClick={createNewChat}
+          className="mt-4 mx-4 bg-[#4ade80] hover:bg-[#3dcc73] text-[#0a1a10] font-semibold py-3.5 px-4 rounded-[14px] flex items-center justify-between transition shadow-lg shadow-[#4ade80]/10"
+        >
+          <span className="text-sm">New chat</span>
+          <div className="bg-white/30 rounded text-black flex items-center justify-center w-5 h-5">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3"><path d="M12 5v14M5 12h14"/></svg>
+          </div>
+        </button>
+      </div>
+
+      {/* Main Container Area - No background gradient! purely dark as requested */}
+      <div className="flex-1 flex flex-col relative bg-[#121212] m-3 ml-0 rounded-[24px]">
+        
+        {/* Top header with active functional buttons */}
+        <div className="h-16 flex items-center px-10 z-10 w-full pt-6 justify-between">
+          <div className="flex items-center gap-4">
+            <button onClick={onBack} className="text-slate-400 hover:text-white transition flex items-center gap-2 text-[14px] font-medium tracking-wide">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M15 18l-6-6 6-6" /></svg>
+              Workspace
+            </button>
+            <div className="px-2.5 py-1 rounded bg-[#22c55e]/10 text-[#4ade80] text-[11px] font-bold border border-[#22c55e]/20 tracking-wider flex items-center gap-2">
+              ClaimGuard AI 
+              {localAttachment ? `(Attached: ${localAttachment.name})` : globalContext ? `(Workspace Linked)` : null}
+            </div>
+          </div>
+          
+          {/* Functional Top Right Buttons */}
+          <div className="flex items-center gap-5 text-slate-400">
+            {activeSessionId && (
+              <>
+                <button 
+                  onClick={toggleBookmark}
+                  title={activeSession?.isBookmarked ? "Remove Bookmark" : "Bookmark Chat"}
+                  className={`transition focus:outline-none ${activeSession?.isBookmarked ? 'text-[#4ade80]' : 'hover:text-white'}`}
+                >
+                  <svg className="w-5 h-5" viewBox="0 0 24 24" fill={activeSession?.isBookmarked ? 'currentColor' : 'none'} stroke="currentColor" strokeWidth="2"><path d="M19 21l-7-5-7 5V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2z"/></svg>
+                </button>
+                <button 
+                  onClick={exportChat}
+                  title="Export Chat as JSON"
+                  className="hover:text-white transition focus:outline-none"
+                >
+                  <svg className="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M4 12v8a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-8M16 6l-4-4-4 4M12 2v13"/></svg>
+                </button>
+              </>
+            )}
+          </div>
+        </div>
+
+        <div className="flex-1 overflow-y-auto px-8 pb-32 pt-12 z-10 w-full max-w-4xl mx-auto flex flex-col relative custom-scrollbar">
+          {messages.length === 0 ? (
+             <div className="flex-1 flex flex-col items-center justify-center -mt-10 w-full max-w-3xl mx-auto">
+              <div className="w-full bg-[#1b1c1b]/80 backdrop-blur-3xl rounded-[28px] p-10 shadow-[0_20px_60px_-15px_rgba(0,0,0,0.5)] border border-white/5 relative mb-4 flex flex-col">
+                
+                <div className="flex justify-center mb-6">
+                  <div className="w-[42px] h-[42px] mask mask-squircle bg-[#22c55e] flex items-center justify-center text-black rounded-xl">
+                     <svg className="w-6 h-6" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M12 2v20M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/></svg>
+                  </div>
+                </div>
+                
+                <h1 className="text-[32px] font-medium text-center text-white mb-3 tracking-tight">How can I help you today?</h1>
+                <p className="text-center text-[#9a9a9a] mb-8 max-w-[420px] mx-auto text-[13px] leading-relaxed">
+                  Upload an EDI payload or ask a general query. Set the context tab below to prefix your request parameters.
+                </p>
+
+                <div className="mb-8 w-full">
+                  <MagicBento cards={chatCards} particleCount={0} disableAnimations={false} enableTilt={true} enableBorderGlow={true} />
+                </div>
+
+                {/* Active Functional Filter Tabs */}
+                <div className="flex items-center justify-center gap-6 mb-5 text-[13px] font-medium text-[#777]">
+                  {filterTabs.map(tab => (
+                    <span 
+                      key={tab}
+                      onClick={() => setActiveFilterTag(tab)}
+                      className={`pb-1 cursor-pointer transition border-b-[2px] ${activeFilterTag === tab ? 'text-[#4ade80] border-[#4ade80]' : 'border-transparent hover:text-slate-300'}`}
+                    >
+                      {tab}
+                    </span>
+                  ))}
+                </div>
+
+                {/* Clean white input bar for empty state */}
+                <div className="relative">
+                  <div className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-500">
+                     <button 
+                       onClick={() => fileInputRef.current?.click()}
+                       className="w-8 h-8 flex items-center justify-center hover:bg-[#f0f0f0] rounded-full transition-colors text-[#666]"
+                       title="Attach File"
+                     >
+                        <svg className="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"/></svg>
+                     </button>
+                  </div>
+                  <input
+                    type="text"
+                    value={input}
+                    onChange={(e) => setInput(e.target.value)}
+                    onKeyDown={handleKeyDown}
+                    placeholder="Message ClaimGuard AI..."
+                    className="w-full bg-white text-slate-800 placeholder:text-slate-400 rounded-xl py-[14px] pl-[52px] pr-[60px] focus:outline-none shadow-lg text-[15px] font-medium"
+                  />
+                  <div className="absolute right-2 top-1/2 -translate-y-1/2 flex items-center gap-1">
+                    <button 
+                       onClick={() => sendMessage()}
+                       disabled={!input.trim() || loading}
+                       className="w-[34px] h-[34px] rounded-[10px] bg-[#4ade80] hover:bg-[#3dcc73] disabled:bg-[#d5ebd1] disabled:text-[#888] text-white flex items-center justify-center transition shadow-sm ml-1 focus:outline-none"
+                    >
+                      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round"><path d="M5 12h14M12 5l7 7-7 7"/></svg>
+                    </button>
+                  </div>
+                </div>
+
+                {/* Attachment Pill Indicator */}
+                {localAttachment && (
+                  <div className="absolute -bottom-8 left-0 right-0 flex justify-center">
+                    <div className="flex items-center gap-2 bg-[#1b1c1b] border border-[#4ade80]/30 text-[#4ade80] text-xs px-3 py-1 rounded-full shadow-lg">
+                      <svg className="w-3 h-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"/></svg>
+                      {localAttachment.name}
+                      <button onClick={removeAttachment} className="ml-1 hover:text-white"><svg className="w-3 h-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><path d="M18 6L6 18M6 6l12 12"/></svg></button>
+                    </div>
+                  </div>
+                )}
+              </div>
+            </div>
+          ) : (
+            <div className="flex-1 w-full max-w-3xl mx-auto flex flex-col space-y-10 pb-20">
+              {messages.map((msg, idx) => (
+                <div key={idx} className={`flex flex-col w-full ${msg.role === 'user' ? 'items-end' : 'items-start'}`}>
+                  <div className="flex items-center gap-4 mb-2">
+                    {msg.role === 'user' ? (
+                      <>
+                        <span className="font-semibold text-white text-[15px]">You</span>
+                        <div className="w-8 h-8 rounded-full bg-[#2a2a2a] flex items-center justify-center border border-[#333]">
+                          <svg className="w-4 h-4 text-slate-300" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>
+                        </div>
+                      </>
+                    ) : (
+                      <>
+                        <div className="w-8 h-8 mask mask-squircle bg-[#22c55e] flex items-center justify-center text-[#0a1f10] rounded-lg">
+                          <svg className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><path d="M12 2v20M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/></svg>
+                        </div>
+                        <span className="font-semibold text-[#4ade80] text-[15px] tracking-wide">ClaimGuard AI</span>
+                      </>
+                    )}
+                  </div>
+                  
+                  <div className={`max-w-[85%] text-[15px] ${msg.role === 'user' ? 'pr-12 text-white text-right' : 'pl-12 text-slate-300 font-normal'} tracking-[0.015em] leading-[1.75]`}>
+                    {renderMessageContent(msg.content)}
+                  </div>
+                </div>
+              ))}
+              {loading && (
+                <div className="flex flex-col items-start w-full">
+                  <div className="flex items-center gap-4 mb-2">
+                    <div className="w-8 h-8 mask mask-squircle bg-[#22c55e]/30 flex items-center justify-center text-[#4ade80] rounded-lg animate-pulse">
+                      <svg className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><path d="M12 2v20M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/></svg>
+                    </div>
+                    <span className="font-semibold text-[#4ade80]/60 text-[15px] tracking-wide">ClaimGuard AI</span>
+                  </div>
+                  <div className="w-full pl-12 text-[15px] text-slate-500 italic">
+                    Analyzing context...
                   </div>
                 </div>
               )}
-            </div>
-          ))}
-
-          {loading && (
-            <div className="flex justify-start animate-fade-in max-w-3xl mx-auto w-full">
-              <div className="flex gap-3">
-                <div className="w-8 h-8 rounded-full shrink-0 flex items-center justify-center mt-1">
-                  <span className="text-xl animate-pulse">✨</span>
-                </div>
-                <div className="bg-gradient-to-r from-[#4285f4]/40 via-[#d96570]/40 to-[#ce63c1]/40 bg-clip-text text-transparent text-[14px] font-medium pt-1 animate-pulse">
-                  Thinking...
-                </div>
-              </div>
+              <div ref={messagesEndRef} />
             </div>
           )}
-          <div ref={messagesEndRef} className="h-2" />
         </div>
-      </div>
 
-      <div className="w-full px-4 pb-4 pt-2 bg-[#131314] shrink-0 border-t border-white/5 shadow-[0_-10px_30px_rgba(0,0,0,0.3)]">
-        <div className="max-w-3xl mx-auto relative flex items-end bg-[#1e1f20] rounded-[24px] pl-4 pr-1.5 py-1.5 focus-within:bg-[#2a2b2f] transition-colors shadow-sm border border-white/5">
-          <textarea
-            ref={textareaRef}
-            value={input}
-            onChange={(e) => setInput(e.target.value)}
-            onKeyDown={handleKeyDown}
-            placeholder="Ask Gemini..."
-            rows={1}
-            className="flex-1 bg-transparent border-none text-[#e3e3e3] placeholder-[#8e918f] resize-none outline-none max-h-[120px] overflow-y-auto py-2.5 text-[14px] leading-relaxed"
-            disabled={loading}
-          />
-          <button
-            onClick={() => sendMessage()}
-            disabled={loading || !input.trim()}
-            className="w-9 h-9 shrink-0 rounded-full flex items-center justify-center text-[#e3e3e3] hover:bg-[#333538] transition-colors disabled:opacity-30 disabled:hover:bg-transparent cursor-pointer ml-2 mb-0.5"
-          >
-            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
-              <path d="M3.4 20.4L20.85 12.92C21.66 12.57 21.66 11.43 20.85 11.08L3.4 3.6C2.74 3.31 2.01 3.8 2.01 4.51L2 9.12C2 9.62 2.37 10.05 2.87 10.11L17 12L2.87 13.88C2.37 13.95 2 14.38 2 14.88L2.01 19.49C2.01 20.2 2.74 20.69 3.4 20.4Z" fill="currentColor"/>
-            </svg>
-          </button>
-        </div>
-        <div className="text-center text-[11px] text-[#8e918f] mt-2.5 tracking-wide">
-          Gemini may display inaccurate info, including about people, so double-check its responses.
+        {/* Floating clean white input area when chat has history */}
+        {messages.length > 0 && (
+          <div className="absolute bottom-6 left-0 right-0 w-full z-20 flex flex-col items-center px-10">
+            {localAttachment && (
+              <div className="mb-2 mr-auto ml-[calc(50%-1.1rem)] max-w-3xl transform -translate-x-1/2 flex items-center gap-2 bg-[#22c55e] text-[#050907] font-semibold text-xs px-4 py-1.5 rounded-t-xl shadow-lg border-b-0 w-fit">
+                <svg className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"/></svg>
+                {localAttachment.name}
+                <button onClick={removeAttachment} className="ml-1 hover:text-[#0b2413]"><svg className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3"><path d="M18 6L6 18M6 6l12 12"/></svg></button>
+              </div>
+            )}
+            <div className="w-full max-w-3xl relative">
+              <div className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400">
+                 <button 
+                   onClick={() => fileInputRef.current?.click()}
+                   className="w-8 h-8 flex items-center justify-center hover:bg-[#f0f0f0] rounded-md transition-colors"
+                   title="Attach File"
+                 >
+                    <svg className="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"/></svg>
+                 </button>
+              </div>
+              <input
+                type="text"
+                value={input}
+                onChange={(e) => setInput(e.target.value)}
+                onKeyDown={handleKeyDown}
+                placeholder="Message ClaimGuard AI..."
+                className={`w-full bg-white border border-[#444] text-slate-800 placeholder:text-slate-400 rounded-2xl py-[16px] pl-[52px] pr-16 focus:outline-none focus:border-[#4ade80] shadow-2xl text-[15px] font-medium ${localAttachment ? 'rounded-tl-none' : ''}`}
+              />
+              <button 
+                onClick={() => sendMessage()}
+                disabled={!input.trim() || loading}
+                className="absolute right-3 top-1/2 -translate-y-1/2 w-9 h-9 rounded-xl bg-[#4ade80] hover:bg-[#3ec770] disabled:bg-[#d5ebd1] disabled:text-[#888] text-white flex items-center justify-center transition focus:outline-none"
+              >
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M5 12h14M12 5l7 7-7 7"/></svg>
+              </button>
+            </div>
+          </div>
+        )}
+        
+        <div className="absolute bottom-1 left-0 right-0 text-center text-[10px] text-[#444] font-medium z-10 select-none pb-0.5">
+          ClaimGuard AI can make mistakes. Consider checking important information.
         </div>
       </div>
     </div>
